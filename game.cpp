@@ -119,9 +119,10 @@ public:
     bool active;
     pthread_t th;
     std::mutex mtx;
+    int direction; // 1 for left, -1 for right
 
-    Dinosaur(int startX, int startY, int initial_health)
-        : x(startX), y(startY), health(initial_health), active(true), th(0) {}
+    Dinosaur(int startX, int startY, int initial_health, int initial_direction = -1)
+        : x(startX), y(startY), health(initial_health), active(true), th(0), direction(initial_direction) {}
 
     static void *move_wrapper(void *arg)
     {
@@ -137,13 +138,25 @@ public:
 
     void move()
     {
-        while (active && x > 1)
+        while (active)
         {
             usleep(200000); // Sleep for 200 milliseconds
-            x--;            // Move left
+
+            // Update position based on current direction
+            x += direction;
+
+            // Check for boundary collision to change direction
+            if (x <= 1)
+            {
+                direction = 1; // Change direction to right
+            }
+            else if (x >= WIDTH - 2)
+            {
+                direction = -1; // Change direction to left
+            }
+
             check_collision();
         }
-        active = false;
     }
 
     void draw()
@@ -190,6 +203,25 @@ void *thread_input(void *arg);
 void *thread_render(void *arg);
 void *thread_dinosaur_manager(void *arg);
 
+// Helper function to check if a position is occupied by an active dinosaur
+bool is_position_occupied(int x, int y)
+{
+    std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+    for (const auto& d : dinosaurs)
+    {
+        if (d->active)
+        {
+            // Check collision with dinosaur's body
+            if (d->x == x && d->y == y)
+                return true;
+            // Check collision with dinosaur's head
+            if (d->x == x && (d->y - 1) == y)
+                return true;
+        }
+    }
+    return false;
+}
+
 // Function to manage player input
 void *thread_input(void *arg)
 {
@@ -203,24 +235,36 @@ void *thread_input(void *arg)
         {
         case KEY_UP:
         case 'w':
-            if (heli.y > 1)
+        {
+            int new_y = heli.y - 1;
+            if (new_y > 1 && !is_position_occupied(heli.x, new_y))
                 heli.y--;
             break;
+        }
         case KEY_DOWN:
         case 's':
-            if (heli.y < HEIGHT - 2)
+        {
+            int new_y = heli.y + 1;
+            if (new_y < HEIGHT - 2 && !is_position_occupied(heli.x, new_y))
                 heli.y++;
             break;
+        }
         case KEY_LEFT:
         case 'a':
-            if (heli.x > 1)
+        {
+            int new_x = heli.x - 1;
+            if (new_x > 1 && !is_position_occupied(new_x, heli.y))
                 heli.x--;
             break;
+        }
         case KEY_RIGHT:
         case 'd':
-            if (heli.x < WIDTH - 2)
+        {
+            int new_x = heli.x + 1;
+            if (new_x < WIDTH - 2 && !is_position_occupied(new_x, heli.y))
                 heli.x++;
             break;
+        }
         case ' ':
             if (heli.can_fire())
             {
@@ -320,17 +364,17 @@ void *thread_dinosaur_manager(void *arg)
     time_t last_spawn_time = time(nullptr);
     while (running)
     {
-        if (dinosaurs.size() >= 5)
-        {
-            // Game over condition
-            running = false;
-            break;
-        }
         time_t current_time = time(nullptr);
         if (difftime(current_time, last_spawn_time) >= t)
         {
-            // Spawn a new dinosaur
-            Dinosaur *d = new Dinosaur(WIDTH - 2, HEIGHT - 2, m);
+            // Fixed y-position for all dinosaurs (ground level)
+            int spawn_y = HEIGHT - 2;
+
+            // Randomize initial direction for diversity
+            int initial_direction = (rand() % 2 == 0) ? -1 : 1;
+
+            // Spawn a new dinosaur at the ground level
+            Dinosaur *d = new Dinosaur(WIDTH - 2, spawn_y, m, initial_direction);
             {
                 std::lock_guard<std::mutex> lock(mtx_dinosaurs);
                 dinosaurs.push_back(d);
@@ -371,7 +415,18 @@ void Missile::check_collision()
 // Dinosaur collision detection with helicopter
 void Dinosaur::check_collision()
 {
-    if (x == heli.x.load() && (y == heli.y.load() || y - 1 == heli.y.load()))
+    int heli_x = heli.x.load();
+    int heli_y = heli.y.load();
+
+    std::lock_guard<std::mutex> lock(mtx);
+
+    // Check collision with dinosaur's body
+    bool collision_body = (x == heli_x && y == heli_y);
+    
+    // Check collision with dinosaur's head
+    bool collision_head = (x == heli_x && (y - 1) == heli_y);
+
+    if (collision_body || collision_head)
     {
         // Collision detected
         running = false;
@@ -386,8 +441,10 @@ int main()
     noecho();
     curs_set(FALSE);
 
+    heli.y = HEIGHT - 3; // Position the helicopter just above the ground
+
     // Create threads
-    pthread_t input_thread_id, render_thread_id, dinosaur_manager_thread_id;
+    pthread_t input_thread_id, render_thread_id, dinosaur_manager_thread_id, truck_thread_id;
     pthread_create(&input_thread_id, nullptr, thread_input, nullptr);
     pthread_create(&render_thread_id, nullptr, thread_render, nullptr);
     pthread_create(&dinosaur_manager_thread_id, nullptr, thread_dinosaur_manager, nullptr);
@@ -396,6 +453,7 @@ int main()
     pthread_join(input_thread_id, nullptr);
     pthread_join(render_thread_id, nullptr);
     pthread_join(dinosaur_manager_thread_id, nullptr);
+    pthread_join(truck_thread_id, nullptr);
 
     // End ncurses
     endwin();
