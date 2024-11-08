@@ -1,5 +1,5 @@
 #include <iostream>
-#include <thread>
+#include <pthread.h>
 #include <mutex>
 #include <atomic>
 #include <vector>
@@ -55,21 +55,28 @@ public:
     int x;
     int y;
     bool active;
-    std::thread th;
+    pthread_t th;
 
     Missile(int startX, int startY)
-        : x(startX), y(startY), active(true) {}
+        : x(startX), y(startY), active(true), th(0) {}
+
+    static void* move_wrapper(void* arg)
+    {
+        Missile* m = static_cast<Missile*>(arg);
+        m->move();
+        return nullptr;
+    }
 
     void start()
     {
-        th = std::thread(&Missile::move, this);
+        pthread_create(&th, nullptr, Missile::move_wrapper, this);
     }
 
     void move()
     {
         while (active && x < WIDTH - 1)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            usleep(50000); // Sleep for 50 milliseconds
             x++;
         }
         active = false;
@@ -85,19 +92,22 @@ public:
 
     void join()
     {
-        if (th.joinable())
-            th.join();
+        if (th)
+        {
+            pthread_join(th, nullptr);
+            th = 0;
+        }
     }
 };
 
 // Global variables
 Helicopter heli(WIDTH / 2, HEIGHT / 2, 5); // Initial capacity of 5 missiles
-std::vector<Missile *> missiles;
+std::vector<Missile*> missiles;
 std::mutex mtx_missiles;
 std::atomic<bool> running(true);
 
 // Function to manage player input
-void thread_input()
+void* thread_input(void* arg)
 {
     int ch;
     nodelay(stdscr, TRUE); // Does not block waiting for input
@@ -132,7 +142,7 @@ void thread_input()
             {
                 heli.fire();
                 // Create and start a new missile
-                Missile *m = new Missile(heli.x + 1, heli.y);
+                Missile* m = new Missile(heli.x + 1, heli.y);
                 {
                     std::lock_guard<std::mutex> lock(mtx_missiles);
                     missiles.push_back(m);
@@ -146,12 +156,13 @@ void thread_input()
         default:
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        usleep(10000); // Sleep for 10 milliseconds
     }
+    return nullptr;
 }
 
 // Function to render the scenario
-void thread_render()
+void* thread_render(void* arg)
 {
     while (running)
     {
@@ -194,8 +205,9 @@ void thread_render()
         mvprintw(HEIGHT, 0, "Remaining missiles: %d", heli.remaining_missiles.load());
 
         refresh();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        usleep(50000); // Sleep for 50 milliseconds
     }
+    return nullptr;
 }
 
 // Main function
@@ -207,12 +219,13 @@ int main()
     curs_set(FALSE);
 
     // Create threads
-    std::thread input_thread(thread_input);
-    std::thread render_thread(thread_render);
+    pthread_t input_thread_id, render_thread_id;
+    pthread_create(&input_thread_id, nullptr, thread_input, nullptr);
+    pthread_create(&render_thread_id, nullptr, thread_render, nullptr);
 
     // Wait for threads
-    input_thread.join();
-    render_thread.join();
+    pthread_join(input_thread_id, nullptr);
+    pthread_join(render_thread_id, nullptr);
 
     // End ncurses
     endwin();
