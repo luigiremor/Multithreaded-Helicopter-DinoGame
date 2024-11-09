@@ -190,6 +190,7 @@ public:
     std::mutex mtx;
     std::condition_variable cv_truck;
     std::condition_variable cv_helicopter;
+    std::condition_variable cv_need_restock;
 
     Depot(int capacity)
         : capacity(capacity), missiles(capacity), is_truck_unloading(false), is_helicopter_reloading(false) {}
@@ -323,8 +324,18 @@ public:
         {
             depot.truck_unload(n); // Unload 'n' missiles
             usleep(2000000);       // Simulate unloading time (2 seconds)
-            active = false;        // Truck leaves after unloading
         }
+
+        // After unloading, move the truck off-screen to the right
+        double exit_x = WIDTH; // Assuming truck exits off the right edge
+        while (active && x < exit_x)
+        {
+            x += speed;
+            usleep(500000); // Sleep for 500 milliseconds
+        }
+
+        // After exiting the screen, mark the truck as inactive
+        active = false;
     }
 
     void join()
@@ -395,6 +406,12 @@ void Depot::helicopter_reload(int amount)
 
     // Notify truck that slots are free
     cv_truck.notify_all();
+
+    // If missiles are below a threshold, notify the truck thread
+    if (missiles <= capacity / 2)
+    {
+        cv_need_restock.notify_one();
+    }
 }
 
 // Helper function to check if a position is occupied by an active dinosaur
@@ -427,8 +444,22 @@ void *thread_truck(void *arg)
 {
     while (running)
     {
-        // Wait for the truck arrival interval
-        sleep(10); // Truck arrives every 10 seconds
+        // Wait until the depot needs restocking
+        std::unique_lock<std::mutex> lock(depot.mtx);
+        depot.cv_need_restock.wait(lock, []()
+                                   { return depot.missiles <= depot.capacity / 2; }); // Threshold set to half capacity
+        lock.unlock();
+
+        // Before sending a new truck, check if a truck is already in transit
+        {
+            std::lock_guard<std::mutex> lock(mtx_trucks);
+            if (!active_trucks.empty())
+            {
+                // There is already a truck active, wait for it to finish
+                usleep(500000); // Sleep for 500 milliseconds
+                continue;       // Go back to waiting
+            }
+        }
 
         // Initialize a new truck instance
         Truck *truck = new Truck(1, DEPOT_Y, DEPOT_X - 5, 1); // Starting from the left off-screen
@@ -440,7 +471,18 @@ void *thread_truck(void *arg)
             active_trucks.push_back(truck);
         }
 
-        // The truck's lifecycle is managed in thread_render
+        // Wait until the truck has finished its journey
+        while (running)
+        {
+            if (!truck->active)
+            {
+                // Truck has completed its journey
+                break;
+            }
+            usleep(500000); // Sleep for 500 milliseconds
+        }
+
+        // The rendering thread will handle deletion of the truck
     }
     return nullptr;
 }
