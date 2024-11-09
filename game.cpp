@@ -13,26 +13,50 @@ const int HEIGHT = 20;
 
 // Difficulty parameters
 int m = 3; // Number of hits required to kill a dinosaur
-int n = 5; // Helicopter missile capacity
+int n = 1000; // Helicopter missile capacity
 int t = 5; // Time interval between dinosaur spawns (in seconds)
 
-// Class to represent the helicopter
+// Class to represent the helicopter// Class to represent the helicopter
 class Helicopter
 {
 public:
-    std::atomic<int> x;
-    std::atomic<int> y;
+    double x;
+    double y;
     std::atomic<int> remaining_missiles;
     std::mutex mtx;
 
     Helicopter(int startX, int startY, int capacity)
         : x(startX), y(startY), remaining_missiles(capacity) {}
 
-    void move(int dx, int dy)
+    void move(double dx, double dy)
     {
         std::lock_guard<std::mutex> lock(mtx);
         x += dx;
         y += dy;
+    }
+
+    double get_x()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return x;
+    }
+
+    double get_y()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return y;
+    }
+
+    void set_x(double new_x)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        x = new_x;
+    }
+
+    void set_y(double new_y)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        y = new_y;
     }
 
     bool can_fire()
@@ -42,14 +66,15 @@ public:
 
     void fire()
     {
-        std::lock_guard<std::mutex> lock(mtx);
-        if (remaining_missiles > 0)
+        int missiles = remaining_missiles.load();
+        if (missiles > 0)
+        {
             remaining_missiles--;
+        }
     }
 
     void reload(int amount)
     {
-        std::lock_guard<std::mutex> lock(mtx);
         remaining_missiles += amount;
     }
 };
@@ -58,12 +83,12 @@ public:
 class Missile
 {
 public:
-    int x;
-    int y;
+    double x;
+    double y;
     bool active;
     pthread_t th;
 
-    Missile(int startX, int startY)
+    Missile(double startX, double startY)
         : x(startX), y(startY), active(true), th(0) {}
 
     static void *move_wrapper(void *arg)
@@ -80,11 +105,13 @@ public:
 
     void move()
     {
+        double speed = 0.5; // Move 0.5 units per update
         while (active && x < WIDTH - 1)
         {
-            usleep(50000); // Sleep for 50 milliseconds
-            x++;
-            check_collision();
+            double prev_x = x;
+            x += speed;
+            check_collision(prev_x, x);
+            usleep(25000); // Sleep for 25 milliseconds
         }
         active = false;
     }
@@ -93,7 +120,7 @@ public:
     {
         if (active)
         {
-            mvprintw(y, x, "-");
+            mvprintw(static_cast<int>(y), static_cast<int>(x), "-");
         }
     }
 
@@ -106,22 +133,22 @@ public:
         }
     }
 
-    void check_collision();
+    void check_collision(double prev_x, double curr_x);
 };
 
 // Class to represent a dinosaur
 class Dinosaur
 {
 public:
-    int x;
-    int y;
+    double x;
+    double y;
     int health;
     bool active;
     pthread_t th;
     std::mutex mtx;
-    int direction; // 1 for left, -1 for right
+    int direction; // 1 for right, -1 for left
 
-    Dinosaur(int startX, int startY, int initial_health, int initial_direction = -1)
+    Dinosaur(double startX, double startY, int initial_health, int initial_direction = -1)
         : x(startX), y(startY), health(initial_health), active(true), th(0), direction(initial_direction) {}
 
     static void *move_wrapper(void *arg)
@@ -138,24 +165,26 @@ public:
 
     void move()
     {
+        double speed = 0.25; // Move 0.25 units per update
         while (active)
         {
-            usleep(200000); // Sleep for 200 milliseconds
-
-            // Update position based on current direction
-            x += direction;
+            double prev_x = x;
+            x += direction * speed;
 
             // Check for boundary collision to change direction
             if (x <= 1)
             {
+                x = 1;
                 direction = 1; // Change direction to right
             }
             else if (x >= WIDTH - 2)
             {
+                x = WIDTH - 2;
                 direction = -1; // Change direction to left
             }
 
             check_collision();
+            usleep(50000); // Sleep for 50 milliseconds
         }
     }
 
@@ -163,8 +192,9 @@ public:
     {
         if (active)
         {
-            mvprintw(y, x, "D");     // Dinosaur body
-            mvprintw(y - 1, x, "O"); // Dinosaur head
+            mvprintw(static_cast<int>(y), static_cast<int>(x), "D"); // Dinosaur body
+            int head_x = static_cast<int>(x + direction);
+            mvprintw(static_cast<int>(y - 1), head_x, "O"); // Dinosaur head
         }
     }
 
@@ -204,18 +234,19 @@ void *thread_render(void *arg);
 void *thread_dinosaur_manager(void *arg);
 
 // Helper function to check if a position is occupied by an active dinosaur
-bool is_position_occupied(int x, int y)
+bool is_position_occupied(double x, double y)
 {
     std::lock_guard<std::mutex> lock(mtx_dinosaurs);
-    for (const auto& d : dinosaurs)
+    for (const auto &d : dinosaurs)
     {
         if (d->active)
         {
             // Check collision with dinosaur's body
-            if (d->x == x && d->y == y)
+            if (static_cast<int>(d->x) == static_cast<int>(x) && static_cast<int>(d->y) == static_cast<int>(y))
                 return true;
             // Check collision with dinosaur's head
-            if (d->x == x && (d->y - 1) == y)
+            int head_x = static_cast<int>(d->x + d->direction);
+            if (head_x == static_cast<int>(x) && static_cast<int>(d->y - 1) == static_cast<int>(y))
                 return true;
         }
     }
@@ -236,33 +267,33 @@ void *thread_input(void *arg)
         case KEY_UP:
         case 'w':
         {
-            int new_y = heli.y - 1;
-            if (new_y > 1 && !is_position_occupied(heli.x, new_y))
-                heli.y--;
+            double new_y = heli.get_y() - 1;
+            if (new_y > 1 && !is_position_occupied(heli.get_x(), new_y))
+                heli.set_y(new_y);
             break;
         }
         case KEY_DOWN:
         case 's':
         {
-            int new_y = heli.y + 1;
-            if (new_y < HEIGHT - 2 && !is_position_occupied(heli.x, new_y))
-                heli.y++;
+            double new_y = heli.get_y() + 1;
+            if (new_y < HEIGHT - 2 && !is_position_occupied(heli.get_x(), new_y))
+                heli.set_y(new_y);
             break;
         }
         case KEY_LEFT:
         case 'a':
         {
-            int new_x = heli.x - 1;
-            if (new_x > 1 && !is_position_occupied(new_x, heli.y))
-                heli.x--;
+            double new_x = heli.get_x() - 1;
+            if (new_x > 1 && !is_position_occupied(new_x, heli.get_y()))
+                heli.set_x(new_x);
             break;
         }
         case KEY_RIGHT:
         case 'd':
         {
-            int new_x = heli.x + 1;
-            if (new_x < WIDTH - 2 && !is_position_occupied(new_x, heli.y))
-                heli.x++;
+            double new_x = heli.get_x() + 1;
+            if (new_x < WIDTH - 2 && !is_position_occupied(new_x, heli.get_y()))
+                heli.set_x(new_x);
             break;
         }
         case ' ':
@@ -270,7 +301,7 @@ void *thread_input(void *arg)
             {
                 heli.fire();
                 // Create and start a new missile
-                Missile *m = new Missile(heli.x + 1, heli.y);
+                Missile *m = new Missile(heli.get_x() + 1, heli.get_y());
                 {
                     std::lock_guard<std::mutex> lock(mtx_missiles);
                     missiles.push_back(m);
@@ -307,7 +338,7 @@ void *thread_render(void *arg)
             mvprintw(i, WIDTH - 1, "#");
         }
         // Draw helicopter
-        mvprintw(heli.y.load(), heli.x.load(), "H");
+        mvprintw(static_cast<int>(heli.get_y()), static_cast<int>(heli.get_x()), "H");
 
         // Draw missiles
         {
@@ -353,7 +384,7 @@ void *thread_render(void *arg)
         mvprintw(HEIGHT, 0, "Remaining missiles: %d  Dinosaurs: %lu", heli.remaining_missiles.load(), dinosaurs.size());
 
         refresh();
-        usleep(50000); // Sleep for 50 milliseconds
+        usleep(25000); // Sleep for 25 milliseconds
     }
     return nullptr;
 }
@@ -368,13 +399,14 @@ void *thread_dinosaur_manager(void *arg)
         if (difftime(current_time, last_spawn_time) >= t)
         {
             // Fixed y-position for all dinosaurs (ground level)
-            int spawn_y = HEIGHT - 2;
+            double spawn_y = HEIGHT - 2;
 
             // Randomize initial direction for diversity
             int initial_direction = (rand() % 2 == 0) ? -1 : 1;
 
             // Spawn a new dinosaur at the ground level
-            Dinosaur *d = new Dinosaur(WIDTH - 2, spawn_y, m, initial_direction);
+            double spawn_x = (initial_direction == -1) ? WIDTH - 2 : 1;
+            Dinosaur *d = new Dinosaur(spawn_x, spawn_y, m, initial_direction);
             {
                 std::lock_guard<std::mutex> lock(mtx_dinosaurs);
                 dinosaurs.push_back(d);
@@ -388,25 +420,35 @@ void *thread_dinosaur_manager(void *arg)
 }
 
 // Missile collision detection with dinosaurs
-void Missile::check_collision()
+void Missile::check_collision(double prev_x, double curr_x)
 {
     std::lock_guard<std::mutex> lock(mtx_dinosaurs);
     for (auto d : dinosaurs)
     {
         if (d->active)
         {
-            // Check collision with dinosaur's head
-            if (x == d->x && y == d->y - 1)
+            double d_head_x = d->x + d->direction; // Shifted head position
+            double d_head_y = d->y - 1;
+
+            // Check for collision between previous and current positions
+            if (y == d_head_y)
             {
-                d->take_damage();
-                active = false;
-                break;
+                if ((prev_x <= d_head_x && curr_x >= d_head_x) || (prev_x >= d_head_x && curr_x <= d_head_x))
+                {
+                    d->take_damage();
+                    active = false;
+                    break;
+                }
             }
+
             // Check collision with dinosaur's body (ineffective)
-            else if (x == d->x && y == d->y)
+            if (y == d->y)
             {
-                active = false;
-                break;
+                if ((prev_x <= d->x && curr_x >= d->x) || (prev_x >= d->x && curr_x <= d->x))
+                {
+                    active = false;
+                    break;
+                }
             }
         }
     }
@@ -415,16 +457,17 @@ void Missile::check_collision()
 // Dinosaur collision detection with helicopter
 void Dinosaur::check_collision()
 {
-    int heli_x = heli.x.load();
-    int heli_y = heli.y.load();
+    double heli_x = heli.get_x();
+    double heli_y = heli.get_y();
 
     std::lock_guard<std::mutex> lock(mtx);
 
     // Check collision with dinosaur's body
-    bool collision_body = (x == heli_x && y == heli_y);
-    
+    bool collision_body = (static_cast<int>(x) == static_cast<int>(heli_x) && static_cast<int>(y) == static_cast<int>(heli_y));
+
     // Check collision with dinosaur's head
-    bool collision_head = (x == heli_x && (y - 1) == heli_y);
+    int head_x = static_cast<int>(x + direction); // Shifted head position
+    bool collision_head = (head_x == static_cast<int>(heli_x) && static_cast<int>(y - 1) == static_cast<int>(heli_y));
 
     if (collision_body || collision_head)
     {
@@ -441,10 +484,10 @@ int main()
     noecho();
     curs_set(FALSE);
 
-    heli.y = HEIGHT - 3; // Position the helicopter just above the ground
+    heli.set_y(HEIGHT - 3); // Position the helicopter just above the ground
 
     // Create threads
-    pthread_t input_thread_id, render_thread_id, dinosaur_manager_thread_id, truck_thread_id;
+    pthread_t input_thread_id, render_thread_id, dinosaur_manager_thread_id;
     pthread_create(&input_thread_id, nullptr, thread_input, nullptr);
     pthread_create(&render_thread_id, nullptr, thread_render, nullptr);
     pthread_create(&dinosaur_manager_thread_id, nullptr, thread_dinosaur_manager, nullptr);
@@ -453,7 +496,6 @@ int main()
     pthread_join(input_thread_id, nullptr);
     pthread_join(render_thread_id, nullptr);
     pthread_join(dinosaur_manager_thread_id, nullptr);
-    pthread_join(truck_thread_id, nullptr);
 
     // End ncurses
     endwin();
