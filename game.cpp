@@ -14,9 +14,11 @@ const int WIDTH = 50;
 const int HEIGHT = 20;
 
 // Difficulty parameters
-int m = 3;    // Number of hits required to kill a dinosaur
+int m = 3; // Number of hits required to kill a dinosaur
 int n = 5; // Helicopter missile capacity
-int t = 5;    // Time interval between dinosaur spawns (in seconds)
+int t = 5; // Time interval between dinosaur spawns (in seconds)
+
+class Truck;
 
 // Forward declaration of Depot class
 class Depot;
@@ -174,6 +176,8 @@ std::vector<Dinosaur *> dinosaurs;
 std::mutex mtx_missiles;
 std::mutex mtx_dinosaurs;
 std::atomic<bool> running(true);
+std::vector<Truck *> active_trucks;
+std::mutex mtx_trucks;
 
 // Class to represent the depot
 class Depot
@@ -279,6 +283,68 @@ Depot depot(n);                            // Initialize depot with capacity 'n'
 const int DEPOT_X = WIDTH / 2;
 const int DEPOT_Y = HEIGHT - 2; // Place depot at the bottom center
 
+// Class to represent the truck
+class Truck
+{
+public:
+    double x;
+    double y;
+    double target_x;
+    double speed;
+    bool active;
+    pthread_t th;
+
+    Truck(double startX, double startY, double targetX, double spd)
+        : x(startX), y(startY), target_x(targetX), speed(spd), active(true), th(0) {}
+
+    static void *move_wrapper(void *arg)
+    {
+        Truck *truck = static_cast<Truck *>(arg);
+        truck->move();
+        return nullptr;
+    }
+
+    void start()
+    {
+        pthread_create(&th, nullptr, Truck::move_wrapper, this);
+    }
+
+    void move()
+    {
+        // Move the truck towards the depot
+        while (active && x < target_x)
+        {
+            x += speed;
+            usleep(500000); // Sleep for 500 milliseconds
+        }
+
+        // Once arrived, unload missiles
+        if (active)
+        {
+            depot.truck_unload(n); // Unload 'n' missiles
+            usleep(2000000);       // Simulate unloading time (2 seconds)
+            active = false;        // Truck leaves after unloading
+        }
+    }
+
+    void join()
+    {
+        if (th)
+        {
+            pthread_join(th, nullptr);
+            th = 0;
+        }
+    }
+
+    void draw()
+    {
+        if (active)
+        {
+            mvprintw(static_cast<int>(y), static_cast<int>(x), "T"); // 'T' represents the truck
+        }
+    }
+};
+
 // Function declarations
 void *thread_input(void *arg);
 void *thread_render(void *arg);
@@ -361,13 +427,20 @@ void *thread_truck(void *arg)
 {
     while (running)
     {
-        // Simulate the time it takes for the truck to arrive
+        // Wait for the truck arrival interval
         sleep(10); // Truck arrives every 10 seconds
 
-        depot.truck_unload(n); // Attempt to unload 'n' missiles
+        // Initialize a new truck instance
+        Truck *truck = new Truck(1, DEPOT_Y, DEPOT_X - 5, 1); // Starting from the left off-screen
+        truck->start();
 
-        // Optional: Indicate that the truck is leaving
-        // You can add a visual representation if desired
+        // Add the truck to the active_trucks list
+        {
+            std::lock_guard<std::mutex> lock(mtx_trucks);
+            active_trucks.push_back(truck);
+        }
+
+        // The truck's lifecycle is managed in thread_render
     }
     return nullptr;
 }
@@ -379,7 +452,6 @@ bool is_near_depot(double heli_x, double heli_y)
     // Define proximity as within 1 unit in any direction
     return (dx <= 1 && dy <= 1);
 }
-
 
 // Function to manage player input
 void *thread_input(void *arg)
@@ -533,11 +605,43 @@ void *thread_render(void *arg)
         // Draw depot
         mvprintw(DEPOT_Y, DEPOT_X, "S"); // 'S' represents the depot
 
+        // Draw active trucks
+        {
+            std::lock_guard<std::mutex> lock(mtx_trucks);
+            for (auto it = active_trucks.begin(); it != active_trucks.end();)
+            {
+                if ((*it)->active)
+                {
+                    (*it)->draw();
+                    ++it;
+                }
+                else
+                {
+                    // Join the thread and remove the truck from the list
+                    (*it)->join();
+                    delete *it;
+                    it = active_trucks.erase(it);
+                }
+            }
+        }
+
         mvprintw(HEIGHT, 0, "Remaining missiles: %d  Depot missiles: %d  Dinosaurs: %lu", heli.remaining_missiles.load(), depot.missiles, dinosaurs.size());
 
         refresh();
         usleep(25000); // Sleep for 25 milliseconds
     }
+
+    // Clean up any remaining trucks
+    {
+        std::lock_guard<std::mutex> lock(mtx_trucks);
+        for (auto truck : active_trucks)
+        {
+            truck->join();
+            delete truck;
+        }
+        active_trucks.clear();
+    }
+
     return nullptr;
 }
 // Function to manage dinosaurs
@@ -692,4 +796,3 @@ int main()
 
     return 0;
 }
-
