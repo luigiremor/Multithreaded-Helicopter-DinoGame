@@ -6,6 +6,8 @@
 #include <ncurses.h>
 #include <unistd.h>
 #include <ctime>
+#include <condition_variable>
+#include <algorithm>
 
 // Scenario dimensions
 const int WIDTH = 50;
@@ -13,84 +15,14 @@ const int HEIGHT = 20;
 
 // Difficulty parameters
 int m = 3;    // Number of hits required to kill a dinosaur
-int n = 1000; // Helicopter missile capacity
+int n = 5; // Helicopter missile capacity
 int t = 5;    // Time interval between dinosaur spawns (in seconds)
 
-// Class to represent the helicopter// Class to represent the helicopter
-class Helicopter
-{
-public:
-    double x;
-    double y;
-    std::atomic<int> remaining_missiles;
-    std::mutex mtx;
-    int last_horizontal_direction; // -1 for left, 1 for right
+// Forward declaration of Depot class
+class Depot;
 
-    Helicopter(int startX, int startY, int capacity)
-        : x(startX), y(startY), remaining_missiles(capacity), last_horizontal_direction(1) {}
-
-    void move(double dx, double dy)
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        x += dx;
-        y += dy;
-    }
-
-    double get_x()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return x;
-    }
-
-    double get_y()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return y;
-    }
-
-    void set_x(double new_x)
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        x = new_x;
-    }
-
-    void set_y(double new_y)
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        y = new_y;
-    }
-
-    bool can_fire()
-    {
-        return remaining_missiles > 0;
-    }
-
-    void fire()
-    {
-        int missiles = remaining_missiles.load();
-        if (missiles > 0)
-        {
-            remaining_missiles--;
-        }
-    }
-
-    void reload(int amount)
-    {
-        remaining_missiles += amount;
-    }
-
-    void set_last_horizontal_direction(int dir)
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        last_horizontal_direction = dir;
-    }
-
-    int get_last_horizontal_direction()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return last_horizontal_direction;
-    }
-};
+// Global variables
+class Helicopter; // Forward declaration
 
 // Class to represent a missile
 class Missile
@@ -235,18 +167,169 @@ public:
     void check_collision();
 };
 
-// Global variables
-Helicopter heli(WIDTH / 2, HEIGHT / 2, n); // Initial missile capacity
+// Now define the global variables
+Helicopter *heli_ptr; // Pointer to Helicopter object (will be initialized later)
 std::vector<Missile *> missiles;
 std::vector<Dinosaur *> dinosaurs;
 std::mutex mtx_missiles;
 std::mutex mtx_dinosaurs;
 std::atomic<bool> running(true);
 
+// Class to represent the depot
+class Depot
+{
+public:
+    int capacity; // Total capacity (n slots)
+    int missiles; // Current number of missiles in the depot
+    bool is_truck_unloading;
+    bool is_helicopter_reloading;
+    std::mutex mtx;
+    std::condition_variable cv_truck;
+    std::condition_variable cv_helicopter;
+
+    Depot(int capacity)
+        : capacity(capacity), missiles(capacity), is_truck_unloading(false), is_helicopter_reloading(false) {}
+
+    void truck_unload(int amount);
+    void helicopter_reload(int amount);
+};
+
+// Class to represent the helicopter
+class Helicopter
+{
+public:
+    double x;
+    double y;
+    std::atomic<int> remaining_missiles;
+    std::mutex mtx;
+    int last_horizontal_direction; // -1 for left, 1 for right
+
+    Helicopter(int startX, int startY, int capacity)
+        : x(startX), y(startY), remaining_missiles(capacity), last_horizontal_direction(1) {}
+
+    void move(double dx, double dy)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        x += dx;
+        y += dy;
+    }
+
+    double get_x()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return x;
+    }
+
+    double get_y()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return y;
+    }
+
+    void set_x(double new_x)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        x = new_x;
+    }
+
+    void set_y(double new_y)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        y = new_y;
+    }
+
+    bool can_fire()
+    {
+        return remaining_missiles > 0;
+    }
+
+    void fire()
+    {
+        int missiles = remaining_missiles.load();
+        if (missiles > 0)
+        {
+            remaining_missiles--;
+        }
+    }
+
+    void reload(int amount)
+    {
+        remaining_missiles += amount;
+    }
+
+    void set_last_horizontal_direction(int dir)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        last_horizontal_direction = dir;
+    }
+
+    int get_last_horizontal_direction()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return last_horizontal_direction;
+    }
+
+    void reload_from_depot();
+};
+
+// Now define the global instances
+Helicopter heli(WIDTH / 2, HEIGHT / 2, n); // Initialize the helicopter
+Depot depot(n);                            // Initialize depot with capacity 'n'
+
+const int DEPOT_X = WIDTH / 2;
+const int DEPOT_Y = HEIGHT - 2; // Place depot at the bottom center
+
 // Function declarations
 void *thread_input(void *arg);
 void *thread_render(void *arg);
 void *thread_dinosaur_manager(void *arg);
+void *thread_truck(void *arg);
+
+// Now define the methods that rely on 'depot'
+void Helicopter::reload_from_depot()
+{
+    depot.helicopter_reload(n - remaining_missiles.load());
+}
+
+// Implement Depot methods
+void Depot::truck_unload(int amount)
+{
+    std::unique_lock<std::mutex> lock(mtx);
+    // Wait until there is at least one free slot and helicopter is not reloading
+    cv_truck.wait(lock, [this]()
+                  { return missiles < capacity && !is_helicopter_reloading; });
+
+    is_truck_unloading = true;
+
+    // Unload missiles, but don't exceed capacity
+    int unload_amount = std::min(amount, capacity - missiles);
+    missiles += unload_amount;
+
+    is_truck_unloading = false;
+
+    // Notify helicopter that missiles are available
+    cv_helicopter.notify_all();
+}
+
+void Depot::helicopter_reload(int amount)
+{
+    std::unique_lock<std::mutex> lock(mtx);
+    // Wait until there is at least one missile and truck is not unloading
+    cv_helicopter.wait(lock, [this]()
+                       { return missiles > 0 && !is_truck_unloading; });
+
+    is_helicopter_reloading = true;
+
+    // Reload missiles, but don't take more than available or helicopter's capacity
+    int reload_amount = std::min(amount, missiles);
+    missiles -= reload_amount;
+    heli.reload(reload_amount);
+
+    is_helicopter_reloading = false;
+
+    // Notify truck that slots are free
+    cv_truck.notify_all();
+}
 
 // Helper function to check if a position is occupied by an active dinosaur
 bool is_position_occupied(double x, double y)
@@ -265,8 +348,38 @@ bool is_position_occupied(double x, double y)
                 return true;
         }
     }
+
+    // **Treat depot's position as occupied to prevent overlapping**
+    if (static_cast<int>(x) == DEPOT_X && static_cast<int>(y) == DEPOT_Y)
+        return true;
+
     return false;
 }
+
+// Function to manage the truck
+void *thread_truck(void *arg)
+{
+    while (running)
+    {
+        // Simulate the time it takes for the truck to arrive
+        sleep(10); // Truck arrives every 10 seconds
+
+        depot.truck_unload(n); // Attempt to unload 'n' missiles
+
+        // Optional: Indicate that the truck is leaving
+        // You can add a visual representation if desired
+    }
+    return nullptr;
+}
+
+bool is_near_depot(double heli_x, double heli_y)
+{
+    int dx = std::abs(static_cast<int>(heli_x) - DEPOT_X);
+    int dy = std::abs(static_cast<int>(heli_y) - DEPOT_Y);
+    // Define proximity as within 1 unit in any direction
+    return (dx <= 1 && dy <= 1);
+}
+
 
 // Function to manage player input
 void *thread_input(void *arg)
@@ -334,11 +447,18 @@ void *thread_input(void *arg)
         default:
             break;
         }
+
+        // **Updated Reload Condition: Check Proximity Instead of Exact Position**
+        if (is_near_depot(heli.get_x(), heli.get_y()) && heli.remaining_missiles.load() < n)
+        {
+            // Helicopter attempts to reload
+            heli.reload_from_depot();
+        }
+
         usleep(10000); // Sleep for 10 milliseconds
     }
     return nullptr;
 }
-
 // Function to render the scenario
 void *thread_render(void *arg)
 {
@@ -356,6 +476,17 @@ void *thread_render(void *arg)
             mvprintw(i, 0, "#");
             mvprintw(i, WIDTH - 1, "#");
         }
+
+        // **Visual Indicator for Reload Zone**
+        if (is_near_depot(heli.get_x(), heli.get_y()))
+        {
+            mvprintw(DEPOT_Y - 1, DEPOT_X, "R"); // 'R' signifies reloading
+        }
+        else
+        {
+            mvprintw(DEPOT_Y - 1, DEPOT_X, " "); // Clear the indicator when not reloading
+        }
+
         // Draw helicopter
         mvprintw(static_cast<int>(heli.get_y()), static_cast<int>(heli.get_x()), "H");
 
@@ -399,15 +530,16 @@ void *thread_render(void *arg)
             }
         }
 
-        // Show remaining missiles and number of dinosaurs
-        mvprintw(HEIGHT, 0, "Remaining missiles: %d  Dinosaurs: %lu", heli.remaining_missiles.load(), dinosaurs.size());
+        // Draw depot
+        mvprintw(DEPOT_Y, DEPOT_X, "S"); // 'S' represents the depot
+
+        mvprintw(HEIGHT, 0, "Remaining missiles: %d  Depot missiles: %d  Dinosaurs: %lu", heli.remaining_missiles.load(), depot.missiles, dinosaurs.size());
 
         refresh();
         usleep(25000); // Sleep for 25 milliseconds
     }
     return nullptr;
 }
-
 // Function to manage dinosaurs
 void *thread_dinosaur_manager(void *arg)
 {
@@ -503,18 +635,23 @@ int main()
     noecho();
     curs_set(FALSE);
 
+    // Assign the helicopter pointer here
+    heli_ptr = &heli;
+
     heli.set_y(HEIGHT - 3); // Position the helicopter just above the ground
 
     // Create threads
-    pthread_t input_thread_id, render_thread_id, dinosaur_manager_thread_id;
+    pthread_t input_thread_id, render_thread_id, dinosaur_manager_thread_id, truck_thread_id;
     pthread_create(&input_thread_id, nullptr, thread_input, nullptr);
     pthread_create(&render_thread_id, nullptr, thread_render, nullptr);
     pthread_create(&dinosaur_manager_thread_id, nullptr, thread_dinosaur_manager, nullptr);
+    pthread_create(&truck_thread_id, nullptr, thread_truck, nullptr);
 
     // Wait for threads
     pthread_join(input_thread_id, nullptr);
     pthread_join(render_thread_id, nullptr);
     pthread_join(dinosaur_manager_thread_id, nullptr);
+    pthread_join(truck_thread_id, nullptr);
 
     // End ncurses
     endwin();
@@ -555,3 +692,4 @@ int main()
 
     return 0;
 }
+
