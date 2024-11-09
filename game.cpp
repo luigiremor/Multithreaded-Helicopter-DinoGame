@@ -702,8 +702,19 @@ void *thread_dinosaur_manager(void *arg)
     while (running)
     {
         time_t current_time = time(nullptr);
+        
+        // Spawn a new dinosaur if the time interval t has elapsed
         if (difftime(current_time, last_spawn_time) >= t)
         {
+            std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+            
+            // Check if the maximum number of dinosaurs has been reached
+            if (dinosaurs.size() >= 5)
+            {
+                running = false;
+                break;
+            }
+
             // Fixed y-position for all dinosaurs (ground level)
             double spawn_y = HEIGHT - 2;
 
@@ -713,13 +724,31 @@ void *thread_dinosaur_manager(void *arg)
             // Spawn a new dinosaur at the ground level
             double spawn_x = (initial_direction == -1) ? WIDTH - 2 : 1;
             Dinosaur *d = new Dinosaur(spawn_x, spawn_y, m, initial_direction);
-            {
-                std::lock_guard<std::mutex> lock(mtx_dinosaurs);
-                dinosaurs.push_back(d);
-            }
+            dinosaurs.push_back(d);
             d->start();
+
             last_spawn_time = current_time;
         }
+
+        {
+            std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+            // Ensure at least one dinosaur is present
+            if (dinosaurs.empty())
+            {
+                // Fixed y-position for all dinosaurs (ground level)
+                double spawn_y = HEIGHT - 2;
+
+                // Randomize initial direction for diversity
+                int initial_direction = (rand() % 2 == 0) ? -1 : 1;
+
+                // Spawn a new dinosaur at the ground level
+                double spawn_x = (initial_direction == -1) ? WIDTH - 2 : 1;
+                Dinosaur *d = new Dinosaur(spawn_x, spawn_y, m, initial_direction);
+                dinosaurs.push_back(d);
+                d->start();
+            }
+        }
+
         usleep(500000); // Sleep for 500 milliseconds
     }
     return nullptr;
