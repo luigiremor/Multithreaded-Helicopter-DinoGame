@@ -573,6 +573,7 @@ void *thread_input(void *arg)
     }
     return nullptr;
 }
+
 // Function to render the scenario
 void *thread_render(void *arg)
 {
@@ -673,6 +674,13 @@ void *thread_render(void *arg)
         usleep(25000); // Sleep for 25 milliseconds
     }
 
+    clear();
+    std::string game_over_msg = "Game Over!";
+    mvprintw(HEIGHT / 2, (WIDTH - game_over_msg.length()) / 2, "%s", game_over_msg.c_str());
+    refresh();
+    nodelay(stdscr, FALSE);
+    getch();
+
     // Clean up any remaining trucks
     {
         std::lock_guard<std::mutex> lock(mtx_trucks);
@@ -686,6 +694,7 @@ void *thread_render(void *arg)
 
     return nullptr;
 }
+
 // Function to manage dinosaurs
 void *thread_dinosaur_manager(void *arg)
 {
@@ -824,16 +833,6 @@ int main()
             delete d;
         }
         dinosaurs.clear();
-    }
-
-    // Game over message
-    if (dinosaurs.size() >= 5)
-    {
-        std::cout << "Game Over! Too many dinosaurs!" << std::endl;
-    }
-    else
-    {
-        std::cout << "Game Over!" << std::endl;
     }
 
     return 0;
