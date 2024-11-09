@@ -12,9 +12,9 @@ const int WIDTH = 50;
 const int HEIGHT = 20;
 
 // Difficulty parameters
-int m = 3; // Number of hits required to kill a dinosaur
+int m = 3;    // Number of hits required to kill a dinosaur
 int n = 1000; // Helicopter missile capacity
-int t = 5; // Time interval between dinosaur spawns (in seconds)
+int t = 5;    // Time interval between dinosaur spawns (in seconds)
 
 // Class to represent the helicopter// Class to represent the helicopter
 class Helicopter
@@ -24,9 +24,10 @@ public:
     double y;
     std::atomic<int> remaining_missiles;
     std::mutex mtx;
+    int last_horizontal_direction; // -1 for left, 1 for right
 
     Helicopter(int startX, int startY, int capacity)
-        : x(startX), y(startY), remaining_missiles(capacity) {}
+        : x(startX), y(startY), remaining_missiles(capacity), last_horizontal_direction(1) {}
 
     void move(double dx, double dy)
     {
@@ -77,6 +78,18 @@ public:
     {
         remaining_missiles += amount;
     }
+
+    void set_last_horizontal_direction(int dir)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        last_horizontal_direction = dir;
+    }
+
+    int get_last_horizontal_direction()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return last_horizontal_direction;
+    }
 };
 
 // Class to represent a missile
@@ -85,11 +98,12 @@ class Missile
 public:
     double x;
     double y;
+    int direction; // -1 for left, 1 for right
     bool active;
     pthread_t th;
 
-    Missile(double startX, double startY)
-        : x(startX), y(startY), active(true), th(0) {}
+    Missile(double startX, double startY, int dir)
+        : x(startX), y(startY), direction(dir), active(true), th(0) {}
 
     static void *move_wrapper(void *arg)
     {
@@ -106,10 +120,10 @@ public:
     void move()
     {
         double speed = 0.5; // Move 0.5 units per update
-        while (active && x < WIDTH - 1)
+        while (active && x > 1 && x < WIDTH - 2)
         {
             double prev_x = x;
-            x += speed;
+            x += direction * speed;
             check_collision(prev_x, x);
             usleep(25000); // Sleep for 25 milliseconds
         }
@@ -120,7 +134,8 @@ public:
     {
         if (active)
         {
-            mvprintw(static_cast<int>(y), static_cast<int>(x), "-");
+            char missile_char = (direction == 1) ? '>' : '<';
+            mvprintw(static_cast<int>(y), static_cast<int>(x), "%c", missile_char);
         }
     }
 
@@ -286,6 +301,7 @@ void *thread_input(void *arg)
             double new_x = heli.get_x() - 1;
             if (new_x > 1 && !is_position_occupied(new_x, heli.get_y()))
                 heli.set_x(new_x);
+            heli.set_last_horizontal_direction(-1); // Moving left
             break;
         }
         case KEY_RIGHT:
@@ -294,14 +310,17 @@ void *thread_input(void *arg)
             double new_x = heli.get_x() + 1;
             if (new_x < WIDTH - 2 && !is_position_occupied(new_x, heli.get_y()))
                 heli.set_x(new_x);
+            heli.set_last_horizontal_direction(1); // Moving right
             break;
         }
         case ' ':
             if (heli.can_fire())
             {
                 heli.fire();
-                // Create and start a new missile
-                Missile *m = new Missile(heli.get_x() + 1, heli.get_y());
+                int missile_direction = heli.get_last_horizontal_direction();
+                // Adjust starting position based on direction
+                double missile_start_x = heli.get_x() + missile_direction;
+                Missile *m = new Missile(missile_start_x, heli.get_y(), missile_direction);
                 {
                     std::lock_guard<std::mutex> lock(mtx_missiles);
                     missiles.push_back(m);
