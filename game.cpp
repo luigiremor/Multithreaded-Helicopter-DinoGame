@@ -97,8 +97,12 @@ public:
     std::mutex mtx;
     int direction; // 1 for right, -1 for left
 
+    // Variables for jumping
+    bool is_jumping;
+    double vertical_velocity;
+
     Dinosaur(double startX, double startY, int initial_health, int initial_direction = -1)
-        : x(startX), y(startY), health(initial_health), active(true), th(0), direction(initial_direction) {}
+        : x(startX), y(startY), health(initial_health), active(true), th(0), direction(initial_direction), is_jumping(false), vertical_velocity(0) {}
 
     static void *move_wrapper(void *arg)
     {
@@ -114,7 +118,10 @@ public:
 
     void move()
     {
-        double speed = 0.25; // Move 0.25 units per update
+        double speed = 0.25;         // Horizontal speed
+        double gravity = 0.05;       // Gravity effect (positive)
+        double jump_strength = -0.5; // Initial vertical velocity when jumping (negative)
+
         while (active)
         {
             double prev_x = x;
@@ -132,6 +139,31 @@ public:
                 direction = -1; // Change direction to left
             }
 
+            // Handle vertical movement
+            if (is_jumping)
+            {
+                vertical_velocity += gravity; // Apply gravity (velocity increases over time)
+                y += vertical_velocity;       // Update vertical position
+
+                if (y >= HEIGHT - 2)
+                {
+                    y = HEIGHT - 2; // Ensure the dinosaur doesn't go below ground
+                    is_jumping = false;
+                    vertical_velocity = 0;
+                }
+            }
+            else
+            {
+                y = HEIGHT - 2; // Keep the dinosaur on the ground when not jumping
+
+                // Random chance to start a jump
+                if (rand() % 100 < 5) // 5% chance each cycle
+                {
+                    is_jumping = true;
+                    vertical_velocity = jump_strength;
+                }
+            }
+
             check_collision();
             usleep(50000); // Sleep for 50 milliseconds
         }
@@ -141,9 +173,12 @@ public:
     {
         if (active)
         {
-            mvprintw(static_cast<int>(y), static_cast<int>(x), "D"); // Dinosaur body
-            int head_x = static_cast<int>(x + direction);
-            mvprintw(static_cast<int>(y - 1), head_x, "O"); // Dinosaur head
+            int draw_x = static_cast<int>(x);
+            int draw_y = static_cast<int>(y);
+
+            mvprintw(draw_y, draw_x, "D"); // Dinosaur body
+            int head_x = draw_x + direction;
+            mvprintw(draw_y - 1, head_x, "O"); // Dinosaur head
         }
     }
 
@@ -702,12 +737,12 @@ void *thread_dinosaur_manager(void *arg)
     while (running)
     {
         time_t current_time = time(nullptr);
-        
+
         // Spawn a new dinosaur if the time interval t has elapsed
         if (difftime(current_time, last_spawn_time) >= t)
         {
             std::lock_guard<std::mutex> lock(mtx_dinosaurs);
-            
+
             // Check if the maximum number of dinosaurs has been reached
             if (dinosaurs.size() >= 5)
             {
@@ -762,11 +797,12 @@ void Missile::check_collision(double prev_x, double curr_x)
     {
         if (d->active)
         {
-            double d_head_x = d->x + d->direction; // Shifted head position
-            double d_head_y = d->y - 1;
+            double d_head_x = d->x + d->direction; // Dinosaur head x position
+            double d_head_y = d->y - 1;            // Dinosaur head y position
 
             // Check for collision between previous and current positions
-            if (y == d_head_y)
+            int missile_y = static_cast<int>(y);
+            if (missile_y == static_cast<int>(d_head_y))
             {
                 if ((prev_x <= d_head_x && curr_x >= d_head_x) || (prev_x >= d_head_x && curr_x <= d_head_x))
                 {
@@ -777,7 +813,7 @@ void Missile::check_collision(double prev_x, double curr_x)
             }
 
             // Check collision with dinosaur's body (ineffective)
-            if (y == d->y)
+            if (missile_y == static_cast<int>(d->y))
             {
                 if ((prev_x <= d->x && curr_x >= d->x) || (prev_x >= d->x && curr_x <= d->x))
                 {
@@ -801,7 +837,7 @@ void Dinosaur::check_collision()
     bool collision_body = (static_cast<int>(x) == static_cast<int>(heli_x) && static_cast<int>(y) == static_cast<int>(heli_y));
 
     // Check collision with dinosaur's head
-    int head_x = static_cast<int>(x + direction); // Shifted head position
+    int head_x = static_cast<int>(x + direction); // Dinosaur head x position
     bool collision_head = (head_x == static_cast<int>(heli_x) && static_cast<int>(y - 1) == static_cast<int>(heli_y));
 
     if (collision_body || collision_head)
@@ -814,6 +850,9 @@ void Dinosaur::check_collision()
 // Main function
 int main()
 {
+    // Seed random number generator
+    srand(time(nullptr));
+
     // Initialize ncurses
     initscr();
     noecho();
