@@ -14,9 +14,9 @@ const int WIDTH = 50;
 const int HEIGHT = 20;
 
 // Difficulty parameters
-int m = 3; // Number of hits required to kill a dinosaur
-int n = 5; // Helicopter missile capacity
-int t = 5; // Time interval between dinosaur spawns (in seconds)
+int m = 3;  // Number of hits required to kill a dinosaur
+int n = 5;  // Helicopter missile capacity
+int t = 55; // Time interval between dinosaur spawns (in seconds)
 
 class Truck;
 
@@ -474,16 +474,15 @@ bool is_position_occupied(double x, double y)
     return false;
 }
 
+const int TRUCK_INTERVAL = 1000000; // 1 second in microseconds
+
 // Function to manage the truck
 void *thread_truck(void *arg)
 {
     while (running)
     {
-        // Wait until the depot needs restocking
-        std::unique_lock<std::mutex> lock(depot.mtx);
-        depot.cv_need_restock.wait(lock, []()
-                                   { return depot.missiles <= depot.capacity / 2; }); // Threshold set to half capacity
-        lock.unlock();
+        // Sleep for the fixed interval
+        usleep(TRUCK_INTERVAL);
 
         // Before sending a new truck, check if a truck is already in transit
         {
@@ -491,13 +490,12 @@ void *thread_truck(void *arg)
             if (!active_trucks.empty())
             {
                 // There is already a truck active, wait for it to finish
-                usleep(500000); // Sleep for 500 milliseconds
-                continue;       // Go back to waiting
+                continue; // Skip sending a new truck
             }
         }
 
         // Initialize a new truck instance
-        Truck *truck = new Truck(1, DEPOT_Y, DEPOT_X - 5, 1); // Starting from the left off-screen
+        Truck *truck = new Truck(1, DEPOT_Y, DEPOT_X - 1, 1); // Adjusted target_x
         truck->start();
 
         // Add the truck to the active_trucks list
@@ -507,17 +505,12 @@ void *thread_truck(void *arg)
         }
 
         // Wait until the truck has finished its journey
-        while (running)
+        while (running && truck->active)
         {
-            if (!truck->active)
-            {
-                // Truck has completed its journey
-                break;
-            }
             usleep(500000); // Sleep for 500 milliseconds
         }
 
-        // The rendering thread will handle deletion of the truck
+        // Do not remove or delete the truck here; the render thread will handle it
     }
     return nullptr;
 }
