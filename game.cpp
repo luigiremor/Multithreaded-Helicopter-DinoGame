@@ -1,7 +1,6 @@
 #include <iostream>
 #include <pthread.h>
 #include <mutex>
-#include <atomic>
 #include <vector>
 #include <ncurses.h>
 #include <unistd.h>
@@ -256,13 +255,20 @@ class Helicopter
 public:
     double x;
     double y;
-    std::atomic<int> remaining_missiles;
+    int remaining_missiles;
+    std::mutex mtx_remaining_missiles;
     std::mutex mtx;
     int last_horizontal_direction; // -1 for left, 1 for right
 
     Helicopter(int startX, int startY, int capacity)
         : x(startX), y(startY), remaining_missiles(capacity),
           last_horizontal_direction(1) {}
+
+    int get_remaining_missiles()
+    {
+        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
+        return remaining_missiles;
+    }
 
     void move(double dx, double dy)
     {
@@ -297,11 +303,13 @@ public:
 
     bool can_fire()
     {
+        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
         return remaining_missiles > 0;
     }
 
     void fire()
     {
+        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
         if (remaining_missiles > 0)
         {
             remaining_missiles--;
@@ -310,6 +318,7 @@ public:
 
     void reload(int amount)
     {
+        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
         remaining_missiles += amount;
     }
 
@@ -413,7 +422,7 @@ void *thread_truck(void *arg);
 // Methods relying on 'depot'
 void Helicopter::reload_from_depot()
 {
-    depot.helicopter_reload(n - remaining_missiles.load());
+    depot.helicopter_reload(n - heli.get_remaining_missiles());
 }
 
 // Implement Depot methods
@@ -580,7 +589,7 @@ void *thread_input(void *arg)
         }
 
         // Reload if near depot
-        if (is_near_depot(heli.get_x(), heli.get_y()) && heli.remaining_missiles.load() < n)
+        if (is_near_depot(heli.get_x(), heli.get_y()) && heli.get_remaining_missiles() < n)
         {
             heli.reload_from_depot();
         }
@@ -682,7 +691,7 @@ void *thread_render(void *arg)
         }
 
         mvprintw(HEIGHT, 0, "Remaining missiles: %d  Depot missiles: %d  Dinosaurs: %lu",
-                 heli.remaining_missiles.load(), depot.missiles, dinosaurs.size());
+                 heli.get_remaining_missiles(), depot.missiles, dinosaurs.size());
 
         refresh();
         usleep(25000);
