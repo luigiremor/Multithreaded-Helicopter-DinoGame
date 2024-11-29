@@ -1,11 +1,9 @@
 #include <iostream>
 #include <pthread.h>
-#include <mutex>
 #include <vector>
 #include <ncurses.h>
 #include <unistd.h>
 #include <ctime>
-#include <condition_variable>
 #include <algorithm>
 
 // Scenario dimensions
@@ -29,22 +27,27 @@ Helicopter *heli_ptr; // Pointer to the helicopter object
 std::vector<Missile *> missiles;
 std::vector<Dinosaur *> dinosaurs;
 std::vector<Truck *> active_trucks;
-std::mutex mtx_missiles;
-std::mutex mtx_dinosaurs;
-std::mutex mtx_trucks;
+pthread_mutex_t mtx_missiles = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mtx_dinosaurs = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mtx_trucks = PTHREAD_MUTEX_INITIALIZER;
 bool running = true;
-std::mutex mtx_running;
+pthread_mutex_t mtx_running = PTHREAD_MUTEX_INITIALIZER;
 
+// Function to safely set the running flag
 void set_running(bool value)
 {
-    std::lock_guard<std::mutex> lock(mtx_running);
+    pthread_mutex_lock(&mtx_running);
     running = value;
+    pthread_mutex_unlock(&mtx_running);
 }
 
+// Function to safely check if the game is running
 bool is_running()
 {
-    std::lock_guard<std::mutex> lock(mtx_running);
-    return running;
+    pthread_mutex_lock(&mtx_running);
+    bool result = running;
+    pthread_mutex_unlock(&mtx_running);
+    return result;
 }
 
 // Depot position
@@ -119,7 +122,7 @@ public:
     int health;
     bool active;
     pthread_t th;
-    std::mutex mtx;
+    pthread_mutex_t mtx;
     int direction; // 1 for right, -1 for left
 
     // Jumping variables
@@ -128,7 +131,15 @@ public:
 
     Dinosaur(double startX, double startY, int initial_health, int initial_direction = -1)
         : x(startX), y(startY), health(initial_health), active(true), th(0),
-          direction(initial_direction), is_jumping(false), vertical_velocity(0) {}
+          direction(initial_direction), is_jumping(false), vertical_velocity(0)
+    {
+        pthread_mutex_init(&mtx, nullptr);
+    }
+
+    ~Dinosaur()
+    {
+        pthread_mutex_destroy(&mtx);
+    }
 
     static void *move_wrapper(void *arg)
     {
@@ -218,12 +229,13 @@ public:
 
     void take_damage()
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        pthread_mutex_lock(&mtx);
         health--;
         if (health <= 0)
         {
             active = false;
         }
+        pthread_mutex_unlock(&mtx);
     }
 
     void check_collision();
@@ -237,13 +249,25 @@ public:
     int missiles; // Current number of missiles
     bool is_truck_unloading;
     bool is_helicopter_reloading;
-    std::mutex mtx;
-    std::condition_variable cv_truck;
-    std::condition_variable cv_helicopter;
+    pthread_mutex_t mtx;
+    pthread_cond_t cv_truck;
+    pthread_cond_t cv_helicopter;
 
     Depot(int capacity)
         : capacity(capacity), missiles(capacity),
-          is_truck_unloading(false), is_helicopter_reloading(false) {}
+          is_truck_unloading(false), is_helicopter_reloading(false)
+    {
+        pthread_mutex_init(&mtx, nullptr);
+        pthread_cond_init(&cv_truck, nullptr);
+        pthread_cond_init(&cv_helicopter, nullptr);
+    }
+
+    ~Depot()
+    {
+        pthread_mutex_destroy(&mtx);
+        pthread_cond_destroy(&cv_truck);
+        pthread_cond_destroy(&cv_helicopter);
+    }
 
     void truck_unload(int amount);
     void helicopter_reload(int amount);
@@ -256,82 +280,108 @@ public:
     double x;
     double y;
     int remaining_missiles;
-    std::mutex mtx_remaining_missiles;
-    std::mutex mtx;
+    pthread_mutex_t mtx_remaining_missiles;
+    pthread_mutex_t mtx;
     int last_horizontal_direction; // -1 for left, 1 for right
 
     Helicopter(int startX, int startY, int capacity)
         : x(startX), y(startY), remaining_missiles(capacity),
-          last_horizontal_direction(1) {}
+          last_horizontal_direction(1)
+    {
+        pthread_mutex_init(&mtx_remaining_missiles, nullptr);
+        pthread_mutex_init(&mtx, nullptr);
+    }
+
+    ~Helicopter()
+    {
+        pthread_mutex_destroy(&mtx_remaining_missiles);
+        pthread_mutex_destroy(&mtx);
+    }
 
     int get_remaining_missiles()
     {
-        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
-        return remaining_missiles;
+        pthread_mutex_lock(&mtx_remaining_missiles);
+        int value = remaining_missiles;
+        pthread_mutex_unlock(&mtx_remaining_missiles);
+        return value;
     }
 
     void move(double dx, double dy)
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        pthread_mutex_lock(&mtx);
         x += dx;
         y += dy;
+        pthread_mutex_unlock(&mtx);
     }
 
     double get_x()
     {
-        std::lock_guard<std::mutex> lock(mtx);
-        return x;
+        pthread_mutex_lock(&mtx);
+        double value = x;
+        pthread_mutex_unlock(&mtx);
+        return value;
     }
 
     double get_y()
     {
-        std::lock_guard<std::mutex> lock(mtx);
-        return y;
+        pthread_mutex_lock(&mtx);
+        double value = y;
+        pthread_mutex_unlock(&mtx);
+        return value;
     }
 
     void set_x(double new_x)
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        pthread_mutex_lock(&mtx);
         x = new_x;
+        pthread_mutex_unlock(&mtx);
     }
 
     void set_y(double new_y)
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        pthread_mutex_lock(&mtx);
         y = new_y;
+        pthread_mutex_unlock(&mtx);
     }
 
     bool can_fire()
     {
-        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
-        return remaining_missiles > 0;
+        pthread_mutex_lock(&mtx_remaining_missiles);
+        bool result = remaining_missiles > 0;
+        pthread_mutex_unlock(&mtx_remaining_missiles);
+        return result;
     }
 
     void fire()
     {
-        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
+        pthread_mutex_lock(&mtx_remaining_missiles);
         if (remaining_missiles > 0)
         {
             remaining_missiles--;
         }
+        pthread_mutex_unlock(&mtx_remaining_missiles);
     }
 
     void reload(int amount)
     {
-        std::lock_guard<std::mutex> lock(mtx_remaining_missiles);
+        pthread_mutex_lock(&mtx_remaining_missiles);
         remaining_missiles += amount;
+        pthread_mutex_unlock(&mtx_remaining_missiles);
     }
 
     void set_last_horizontal_direction(int dir)
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        pthread_mutex_lock(&mtx);
         last_horizontal_direction = dir;
+        pthread_mutex_unlock(&mtx);
     }
 
     int get_last_horizontal_direction()
     {
-        std::lock_guard<std::mutex> lock(mtx);
-        return last_horizontal_direction;
+        pthread_mutex_lock(&mtx);
+        int value = last_horizontal_direction;
+        pthread_mutex_unlock(&mtx);
+        return value;
     }
 
     void reload_from_depot();
@@ -428,23 +478,28 @@ void Helicopter::reload_from_depot()
 // Implement Depot methods
 void Depot::truck_unload(int amount)
 {
-    std::unique_lock<std::mutex> lock(mtx);
-    cv_truck.wait(lock, [this]()
-                  { return missiles < capacity && !is_helicopter_reloading; });
+    pthread_mutex_lock(&mtx);
+    while (!(missiles < capacity && !is_helicopter_reloading))
+    {
+        pthread_cond_wait(&cv_truck, &mtx);
+    }
 
     is_truck_unloading = true;
     int unload_amount = std::min(amount, capacity - missiles);
     missiles += unload_amount;
     is_truck_unloading = false;
 
-    cv_helicopter.notify_all();
+    pthread_cond_broadcast(&cv_helicopter);
+    pthread_mutex_unlock(&mtx);
 }
 
 void Depot::helicopter_reload(int amount)
 {
-    std::unique_lock<std::mutex> lock(mtx);
-    cv_helicopter.wait(lock, [this]()
-                       { return missiles > 0 && !is_truck_unloading; });
+    pthread_mutex_lock(&mtx);
+    while (!(missiles > 0 && !is_truck_unloading))
+    {
+        pthread_cond_wait(&cv_helicopter, &mtx);
+    }
 
     is_helicopter_reloading = true;
     int reload_amount = std::min(amount, missiles);
@@ -452,13 +507,14 @@ void Depot::helicopter_reload(int amount)
     heli.reload(reload_amount);
     is_helicopter_reloading = false;
 
-    cv_truck.notify_all();
+    pthread_cond_broadcast(&cv_truck);
+    pthread_mutex_unlock(&mtx);
 }
 
 // Helper function to check if a position is occupied by an active dinosaur or the depot
 bool is_position_occupied(double x, double y)
 {
-    std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+    pthread_mutex_lock(&mtx_dinosaurs);
     for (const auto &d : dinosaurs)
     {
         if (d->active)
@@ -466,14 +522,21 @@ bool is_position_occupied(double x, double y)
             // Dinosaur body
             if (static_cast<int>(d->x) == static_cast<int>(x) &&
                 static_cast<int>(d->y) == static_cast<int>(y))
+            {
+                pthread_mutex_unlock(&mtx_dinosaurs);
                 return true;
+            }
             // Dinosaur head
             int head_x = static_cast<int>(d->x + d->direction);
             if (head_x == static_cast<int>(x) &&
                 static_cast<int>(d->y - 1) == static_cast<int>(y))
+            {
+                pthread_mutex_unlock(&mtx_dinosaurs);
                 return true;
+            }
         }
     }
+    pthread_mutex_unlock(&mtx_dinosaurs);
 
     // Depot position
     if (static_cast<int>(x) == DEPOT_X && static_cast<int>(y) == DEPOT_Y)
@@ -492,19 +555,22 @@ void *thread_truck(void *arg)
         usleep(TRUCK_INTERVAL);
 
         {
-            std::lock_guard<std::mutex> lock(mtx_trucks);
+            pthread_mutex_lock(&mtx_trucks);
             if (!active_trucks.empty())
             {
+                pthread_mutex_unlock(&mtx_trucks);
                 continue;
             }
+            pthread_mutex_unlock(&mtx_trucks);
         }
 
         Truck *truck = new Truck(1, DEPOT_Y, DEPOT_X - 1, 1);
         truck->start();
 
         {
-            std::lock_guard<std::mutex> lock(mtx_trucks);
+            pthread_mutex_lock(&mtx_trucks);
             active_trucks.push_back(truck);
+            pthread_mutex_unlock(&mtx_trucks);
         }
 
         while (is_running() && truck->active)
@@ -575,8 +641,9 @@ void *thread_input(void *arg)
                 double missile_start_x = heli.get_x() + missile_direction;
                 Missile *m = new Missile(missile_start_x, heli.get_y(), missile_direction);
                 {
-                    std::lock_guard<std::mutex> lock(mtx_missiles);
+                    pthread_mutex_lock(&mtx_missiles);
                     missiles.push_back(m);
+                    pthread_mutex_unlock(&mtx_missiles);
                 }
                 m->start();
             }
@@ -632,7 +699,7 @@ void *thread_render(void *arg)
 
         // Draw missiles
         {
-            std::lock_guard<std::mutex> lock(mtx_missiles);
+            pthread_mutex_lock(&mtx_missiles);
             for (auto it = missiles.begin(); it != missiles.end();)
             {
                 if ((*it)->active)
@@ -647,11 +714,12 @@ void *thread_render(void *arg)
                     it = missiles.erase(it);
                 }
             }
+            pthread_mutex_unlock(&mtx_missiles);
         }
 
         // Draw dinosaurs
         {
-            std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+            pthread_mutex_lock(&mtx_dinosaurs);
             for (auto it = dinosaurs.begin(); it != dinosaurs.end();)
             {
                 if ((*it)->active)
@@ -666,6 +734,7 @@ void *thread_render(void *arg)
                     it = dinosaurs.erase(it);
                 }
             }
+            pthread_mutex_unlock(&mtx_dinosaurs);
         }
 
         // Draw depot
@@ -673,7 +742,7 @@ void *thread_render(void *arg)
 
         // Draw active trucks
         {
-            std::lock_guard<std::mutex> lock(mtx_trucks);
+            pthread_mutex_lock(&mtx_trucks);
             for (auto it = active_trucks.begin(); it != active_trucks.end();)
             {
                 if ((*it)->active)
@@ -688,6 +757,7 @@ void *thread_render(void *arg)
                     it = active_trucks.erase(it);
                 }
             }
+            pthread_mutex_unlock(&mtx_trucks);
         }
 
         mvprintw(HEIGHT, 0, "Remaining missiles: %d  Depot missiles: %d  Dinosaurs: %lu",
@@ -706,13 +776,14 @@ void *thread_render(void *arg)
 
     // Clean up remaining trucks
     {
-        std::lock_guard<std::mutex> lock(mtx_trucks);
+        pthread_mutex_lock(&mtx_trucks);
         for (auto truck : active_trucks)
         {
             truck->join();
             delete truck;
         }
         active_trucks.clear();
+        pthread_mutex_unlock(&mtx_trucks);
     }
 
     return nullptr;
@@ -723,13 +794,14 @@ void *thread_dinosaur_manager(void *arg)
 {
     // Spawn the initial dinosaur
     {
-        std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+        pthread_mutex_lock(&mtx_dinosaurs);
         double spawn_y = HEIGHT - 2;
         int initial_direction = (rand() % 2 == 0) ? -1 : 1;
         double spawn_x = (initial_direction == -1) ? WIDTH - 2 : 1;
         Dinosaur *d = new Dinosaur(spawn_x, spawn_y, m, initial_direction);
         dinosaurs.push_back(d);
         d->start();
+        pthread_mutex_unlock(&mtx_dinosaurs);
     }
 
     time_t last_spawn_time = time(nullptr);
@@ -740,11 +812,12 @@ void *thread_dinosaur_manager(void *arg)
         // Spawn a new dinosaur if the time interval t has elapsed
         if (difftime(current_time, last_spawn_time) >= t)
         {
-            std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+            pthread_mutex_lock(&mtx_dinosaurs);
 
             // Check if the maximum number of dinosaurs has been reached
             if (dinosaurs.size() == 4)
             {
+                pthread_mutex_unlock(&mtx_dinosaurs);
                 set_running(false);
                 break;
             }
@@ -757,6 +830,8 @@ void *thread_dinosaur_manager(void *arg)
             dinosaurs.push_back(d);
             d->start();
 
+            pthread_mutex_unlock(&mtx_dinosaurs);
+
             last_spawn_time = current_time;
         }
 
@@ -768,7 +843,7 @@ void *thread_dinosaur_manager(void *arg)
 // Missile collision detection with dinosaurs
 void Missile::check_collision(double prev_x, double curr_x)
 {
-    std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+    pthread_mutex_lock(&mtx_dinosaurs);
     for (auto d : dinosaurs)
     {
         if (d->active)
@@ -800,6 +875,7 @@ void Missile::check_collision(double prev_x, double curr_x)
             }
         }
     }
+    pthread_mutex_unlock(&mtx_dinosaurs);
 }
 
 // Dinosaur collision detection with helicopter
@@ -808,7 +884,7 @@ void Dinosaur::check_collision()
     double heli_x = heli.get_x();
     double heli_y = heli.get_y();
 
-    std::lock_guard<std::mutex> lock(mtx);
+    pthread_mutex_lock(&mtx);
 
     // Collision with dinosaur's body
     bool collision_body = (static_cast<int>(x) == static_cast<int>(heli_x) &&
@@ -818,6 +894,8 @@ void Dinosaur::check_collision()
     int head_x = static_cast<int>(x + direction);
     bool collision_head = (head_x == static_cast<int>(heli_x) &&
                            static_cast<int>(y - 1) == static_cast<int>(heli_y));
+
+    pthread_mutex_unlock(&mtx);
 
     if (collision_body || collision_head)
     {
@@ -859,7 +937,7 @@ int main()
 
     // Clear remaining missiles
     {
-        std::lock_guard<std::mutex> lock(mtx_missiles);
+        pthread_mutex_lock(&mtx_missiles);
         for (auto m : missiles)
         {
             m->active = false;
@@ -867,11 +945,12 @@ int main()
             delete m;
         }
         missiles.clear();
+        pthread_mutex_unlock(&mtx_missiles);
     }
 
     // Clear remaining dinosaurs
     {
-        std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+        pthread_mutex_lock(&mtx_dinosaurs);
         for (auto d : dinosaurs)
         {
             d->active = false;
@@ -879,7 +958,14 @@ int main()
             delete d;
         }
         dinosaurs.clear();
+        pthread_mutex_unlock(&mtx_dinosaurs);
     }
+
+    // Destroy mutexes
+    pthread_mutex_destroy(&mtx_missiles);
+    pthread_mutex_destroy(&mtx_dinosaurs);
+    pthread_mutex_destroy(&mtx_trucks);
+    pthread_mutex_destroy(&mtx_running);
 
     return 0;
 }
