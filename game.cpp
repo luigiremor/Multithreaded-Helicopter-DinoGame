@@ -14,17 +14,30 @@ const int WIDTH = 50;
 const int HEIGHT = 20;
 
 // Difficulty parameters
-int m = 3;  // Number of hits required to kill a dinosaur
+int m = 3;  // Hits required to kill a dinosaur
 int n = 5;  // Helicopter missile capacity
-int t = 20; // Time interval between dinosaur spawns (in seconds)
+int t = 10; // Time interval between dinosaur spawns (in seconds)
 
+// Forward declarations
 class Truck;
-
-// Forward declaration of Depot class
 class Depot;
+class Helicopter;
+class Missile;
+class Dinosaur;
 
 // Global variables
-class Helicopter; // Forward declaration
+Helicopter *heli_ptr; // Pointer to the helicopter object
+std::vector<Missile *> missiles;
+std::vector<Dinosaur *> dinosaurs;
+std::vector<Truck *> active_trucks;
+std::mutex mtx_missiles;
+std::mutex mtx_dinosaurs;
+std::mutex mtx_trucks;
+std::atomic<bool> running(true);
+
+// Depot position
+const int DEPOT_X = WIDTH / 2;
+const int DEPOT_Y = HEIGHT - 2; // Bottom center of the screen
 
 // Class to represent a missile
 class Missile
@@ -53,13 +66,13 @@ public:
 
     void move()
     {
-        double speed = 0.5; // Move 0.5 units per update
+        double speed = 0.5;
         while (active && x > 1 && x < WIDTH - 2)
         {
             double prev_x = x;
             x += direction * speed;
             check_collision(prev_x, x);
-            usleep(25000); // Sleep for 25 milliseconds
+            usleep(25000);
         }
         active = false;
     }
@@ -97,12 +110,13 @@ public:
     std::mutex mtx;
     int direction; // 1 for right, -1 for left
 
-    // Variables for jumping
+    // Jumping variables
     bool is_jumping;
     double vertical_velocity;
 
     Dinosaur(double startX, double startY, int initial_health, int initial_direction = -1)
-        : x(startX), y(startY), health(initial_health), active(true), th(0), direction(initial_direction), is_jumping(false), vertical_velocity(0) {}
+        : x(startX), y(startY), health(initial_health), active(true), th(0),
+          direction(initial_direction), is_jumping(false), vertical_velocity(0) {}
 
     static void *move_wrapper(void *arg)
     {
@@ -118,46 +132,45 @@ public:
 
     void move()
     {
-        double speed = 0.25;         // Horizontal speed
-        double gravity = 0.05;       // Gravity effect (positive)
-        double jump_strength = -0.5; // Initial vertical velocity when jumping (negative)
+        double speed = 0.25;
+        double gravity = 0.05;
+        double jump_strength = -0.5;
 
         while (active)
         {
-            double prev_x = x;
             x += direction * speed;
 
-            // Check for boundary collision to change direction
+            // Change direction at boundaries
             if (x <= 1)
             {
                 x = 1;
-                direction = 1; // Change direction to right
+                direction = 1;
             }
             else if (x >= WIDTH - 2)
             {
                 x = WIDTH - 2;
-                direction = -1; // Change direction to left
+                direction = -1;
             }
 
             // Handle vertical movement
             if (is_jumping)
             {
-                vertical_velocity += gravity; // Apply gravity (velocity increases over time)
-                y += vertical_velocity;       // Update vertical position
+                vertical_velocity += gravity;
+                y += vertical_velocity;
 
                 if (y >= HEIGHT - 2)
                 {
-                    y = HEIGHT - 2; // Ensure the dinosaur doesn't go below ground
+                    y = HEIGHT - 2;
                     is_jumping = false;
                     vertical_velocity = 0;
                 }
             }
             else
             {
-                y = HEIGHT - 2; // Keep the dinosaur on the ground when not jumping
+                y = HEIGHT - 2;
 
                 // Random chance to start a jump
-                if (rand() % 100 < 5) // 5% chance each cycle
+                if (rand() % 100 < 5)
                 {
                     is_jumping = true;
                     vertical_velocity = jump_strength;
@@ -165,7 +178,7 @@ public:
             }
 
             check_collision();
-            usleep(50000); // Sleep for 50 milliseconds
+            usleep(50000);
         }
     }
 
@@ -204,31 +217,21 @@ public:
     void check_collision();
 };
 
-// Now define the global variables
-Helicopter *heli_ptr; // Pointer to Helicopter object (will be initialized later)
-std::vector<Missile *> missiles;
-std::vector<Dinosaur *> dinosaurs;
-std::mutex mtx_missiles;
-std::mutex mtx_dinosaurs;
-std::atomic<bool> running(true);
-std::vector<Truck *> active_trucks;
-std::mutex mtx_trucks;
-
 // Class to represent the depot
 class Depot
 {
 public:
     int capacity; // Total capacity (n slots)
-    int missiles; // Current number of missiles in the depot
+    int missiles; // Current number of missiles
     bool is_truck_unloading;
     bool is_helicopter_reloading;
     std::mutex mtx;
     std::condition_variable cv_truck;
     std::condition_variable cv_helicopter;
-    std::condition_variable cv_need_restock;
 
     Depot(int capacity)
-        : capacity(capacity), missiles(capacity), is_truck_unloading(false), is_helicopter_reloading(false) {}
+        : capacity(capacity), missiles(capacity),
+          is_truck_unloading(false), is_helicopter_reloading(false) {}
 
     void truck_unload(int amount);
     void helicopter_reload(int amount);
@@ -245,7 +248,8 @@ public:
     int last_horizontal_direction; // -1 for left, 1 for right
 
     Helicopter(int startX, int startY, int capacity)
-        : x(startX), y(startY), remaining_missiles(capacity), last_horizontal_direction(1) {}
+        : x(startX), y(startY), remaining_missiles(capacity),
+          last_horizontal_direction(1) {}
 
     void move(double dx, double dy)
     {
@@ -285,8 +289,7 @@ public:
 
     void fire()
     {
-        int missiles = remaining_missiles.load();
-        if (missiles > 0)
+        if (remaining_missiles > 0)
         {
             remaining_missiles--;
         }
@@ -312,12 +315,9 @@ public:
     void reload_from_depot();
 };
 
-// Now define the global instances
-Helicopter heli(WIDTH / 2, HEIGHT / 2, n); // Initialize the helicopter
-Depot depot(n);                            // Initialize depot with capacity 'n'
-
-const int DEPOT_X = WIDTH / 2;
-const int DEPOT_Y = HEIGHT - 2; // Place depot at the bottom center
+// Global instances
+Helicopter heli(WIDTH / 2, HEIGHT / 2, n);
+Depot depot(n);
 
 // Class to represent the truck
 class Truck
@@ -331,7 +331,8 @@ public:
     pthread_t th;
 
     Truck(double startX, double startY, double targetX, double spd)
-        : x(startX), y(startY), target_x(targetX), speed(spd), active(true), th(0) {}
+        : x(startX), y(startY), target_x(targetX),
+          speed(spd), active(true), th(0) {}
 
     static void *move_wrapper(void *arg)
     {
@@ -347,29 +348,28 @@ public:
 
     void move()
     {
-        // Move the truck towards the depot
+        // Move towards the depot
         while (active && x < target_x)
         {
             x += speed;
-            usleep(500000); // Sleep for 500 milliseconds
+            usleep(500000);
         }
 
-        // Once arrived, unload missiles
+        // Unload missiles
         if (active)
         {
-            depot.truck_unload(n); // Unload 'n' missiles
-            usleep(2000000);       // Simulate unloading time (2 seconds)
+            depot.truck_unload(n);
+            usleep(2000000);
         }
 
-        // After unloading, move the truck off-screen to the right
-        double exit_x = WIDTH; // Assuming truck exits off the right edge
+        // Exit the screen
+        double exit_x = WIDTH;
         while (active && x < exit_x)
         {
             x += speed;
-            usleep(500000); // Sleep for 500 milliseconds
+            usleep(500000);
         }
 
-        // After exiting the screen, mark the truck as inactive
         active = false;
     }
 
@@ -386,7 +386,7 @@ public:
     {
         if (active)
         {
-            mvprintw(static_cast<int>(y), static_cast<int>(x), "T"); // 'T' represents the truck
+            mvprintw(static_cast<int>(y), static_cast<int>(x), "T");
         }
     }
 };
@@ -397,7 +397,7 @@ void *thread_render(void *arg);
 void *thread_dinosaur_manager(void *arg);
 void *thread_truck(void *arg);
 
-// Now define the methods that rely on 'depot'
+// Methods relying on 'depot'
 void Helicopter::reload_from_depot()
 {
     depot.helicopter_reload(n - remaining_missiles.load());
@@ -407,49 +407,33 @@ void Helicopter::reload_from_depot()
 void Depot::truck_unload(int amount)
 {
     std::unique_lock<std::mutex> lock(mtx);
-    // Wait until there is at least one free slot and helicopter is not reloading
     cv_truck.wait(lock, [this]()
                   { return missiles < capacity && !is_helicopter_reloading; });
 
     is_truck_unloading = true;
-
-    // Unload missiles, but don't exceed capacity
     int unload_amount = std::min(amount, capacity - missiles);
     missiles += unload_amount;
-
     is_truck_unloading = false;
 
-    // Notify helicopter that missiles are available
     cv_helicopter.notify_all();
 }
 
 void Depot::helicopter_reload(int amount)
 {
     std::unique_lock<std::mutex> lock(mtx);
-    // Wait until there is at least one missile and truck is not unloading
     cv_helicopter.wait(lock, [this]()
                        { return missiles > 0 && !is_truck_unloading; });
 
     is_helicopter_reloading = true;
-
-    // Reload missiles, but don't take more than available or helicopter's capacity
     int reload_amount = std::min(amount, missiles);
     missiles -= reload_amount;
     heli.reload(reload_amount);
-
     is_helicopter_reloading = false;
 
-    // Notify truck that slots are free
     cv_truck.notify_all();
-
-    // If missiles are below a threshold, notify the truck thread
-    if (missiles <= capacity / 2)
-    {
-        cv_need_restock.notify_one();
-    }
 }
 
-// Helper function to check if a position is occupied by an active dinosaur
+// Helper function to check if a position is occupied by an active dinosaur or the depot
 bool is_position_occupied(double x, double y)
 {
     std::lock_guard<std::mutex> lock(mtx_dinosaurs);
@@ -457,17 +441,19 @@ bool is_position_occupied(double x, double y)
     {
         if (d->active)
         {
-            // Check collision with dinosaur's body
-            if (static_cast<int>(d->x) == static_cast<int>(x) && static_cast<int>(d->y) == static_cast<int>(y))
+            // Dinosaur body
+            if (static_cast<int>(d->x) == static_cast<int>(x) &&
+                static_cast<int>(d->y) == static_cast<int>(y))
                 return true;
-            // Check collision with dinosaur's head
+            // Dinosaur head
             int head_x = static_cast<int>(d->x + d->direction);
-            if (head_x == static_cast<int>(x) && static_cast<int>(d->y - 1) == static_cast<int>(y))
+            if (head_x == static_cast<int>(x) &&
+                static_cast<int>(d->y - 1) == static_cast<int>(y))
                 return true;
         }
     }
 
-    // **Treat depot's position as occupied to prevent overlapping**
+    // Depot position
     if (static_cast<int>(x) == DEPOT_X && static_cast<int>(y) == DEPOT_Y)
         return true;
 
@@ -481,36 +467,28 @@ void *thread_truck(void *arg)
 {
     while (running)
     {
-        // Sleep for the fixed interval
         usleep(TRUCK_INTERVAL);
 
-        // Before sending a new truck, check if a truck is already in transit
         {
             std::lock_guard<std::mutex> lock(mtx_trucks);
             if (!active_trucks.empty())
             {
-                // There is already a truck active, wait for it to finish
-                continue; // Skip sending a new truck
+                continue;
             }
         }
 
-        // Initialize a new truck instance
-        Truck *truck = new Truck(1, DEPOT_Y, DEPOT_X - 1, 1); // Adjusted target_x
+        Truck *truck = new Truck(1, DEPOT_Y, DEPOT_X - 1, 1);
         truck->start();
 
-        // Add the truck to the active_trucks list
         {
             std::lock_guard<std::mutex> lock(mtx_trucks);
             active_trucks.push_back(truck);
         }
 
-        // Wait until the truck has finished its journey
         while (running && truck->active)
         {
-            usleep(500000); // Sleep for 500 milliseconds
+            usleep(500000);
         }
-
-        // Do not remove or delete the truck here; the render thread will handle it
     }
     return nullptr;
 }
@@ -519,7 +497,6 @@ bool is_near_depot(double heli_x, double heli_y)
 {
     int dx = std::abs(static_cast<int>(heli_x) - DEPOT_X);
     int dy = std::abs(static_cast<int>(heli_y) - DEPOT_Y);
-    // Define proximity as within 1 unit in any direction
     return (dx <= 1 && dy <= 1);
 }
 
@@ -527,8 +504,8 @@ bool is_near_depot(double heli_x, double heli_y)
 void *thread_input(void *arg)
 {
     int ch;
-    nodelay(stdscr, TRUE); // Does not block waiting for input
-    keypad(stdscr, TRUE);  // Captures special keys
+    nodelay(stdscr, TRUE);
+    keypad(stdscr, TRUE);
     while (running)
     {
         ch = getch();
@@ -556,7 +533,7 @@ void *thread_input(void *arg)
             double new_x = heli.get_x() - 1;
             if (new_x > 1 && !is_position_occupied(new_x, heli.get_y()))
                 heli.set_x(new_x);
-            heli.set_last_horizontal_direction(-1); // Moving left
+            heli.set_last_horizontal_direction(-1);
             break;
         }
         case KEY_RIGHT:
@@ -565,7 +542,7 @@ void *thread_input(void *arg)
             double new_x = heli.get_x() + 1;
             if (new_x < WIDTH - 2 && !is_position_occupied(new_x, heli.get_y()))
                 heli.set_x(new_x);
-            heli.set_last_horizontal_direction(1); // Moving right
+            heli.set_last_horizontal_direction(1);
             break;
         }
         case ' ':
@@ -573,7 +550,6 @@ void *thread_input(void *arg)
             {
                 heli.fire();
                 int missile_direction = heli.get_last_horizontal_direction();
-                // Adjust starting position based on direction
                 double missile_start_x = heli.get_x() + missile_direction;
                 Missile *m = new Missile(missile_start_x, heli.get_y(), missile_direction);
                 {
@@ -590,14 +566,13 @@ void *thread_input(void *arg)
             break;
         }
 
-        // **Updated Reload Condition: Check Proximity Instead of Exact Position**
+        // Reload if near depot
         if (is_near_depot(heli.get_x(), heli.get_y()) && heli.remaining_missiles.load() < n)
         {
-            // Helicopter attempts to reload
             heli.reload_from_depot();
         }
 
-        usleep(10000); // Sleep for 10 milliseconds
+        usleep(10000);
     }
     return nullptr;
 }
@@ -620,14 +595,14 @@ void *thread_render(void *arg)
             mvprintw(i, WIDTH - 1, "#");
         }
 
-        // **Visual Indicator for Reload Zone**
+        // Reload indicator
         if (is_near_depot(heli.get_x(), heli.get_y()))
         {
-            mvprintw(DEPOT_Y - 1, DEPOT_X, "R"); // 'R' signifies reloading
+            mvprintw(DEPOT_Y - 1, DEPOT_X, "R");
         }
         else
         {
-            mvprintw(DEPOT_Y - 1, DEPOT_X, " "); // Clear the indicator when not reloading
+            mvprintw(DEPOT_Y - 1, DEPOT_X, " ");
         }
 
         // Draw helicopter
@@ -645,7 +620,6 @@ void *thread_render(void *arg)
                 }
                 else
                 {
-                    // Join the thread and remove the missile from the list
                     (*it)->join();
                     delete *it;
                     it = missiles.erase(it);
@@ -665,7 +639,6 @@ void *thread_render(void *arg)
                 }
                 else
                 {
-                    // Join the thread and remove the dinosaur from the list
                     (*it)->join();
                     delete *it;
                     it = dinosaurs.erase(it);
@@ -674,7 +647,7 @@ void *thread_render(void *arg)
         }
 
         // Draw depot
-        mvprintw(DEPOT_Y, DEPOT_X, "S"); // 'S' represents the depot
+        mvprintw(DEPOT_Y, DEPOT_X, "S");
 
         // Draw active trucks
         {
@@ -688,7 +661,6 @@ void *thread_render(void *arg)
                 }
                 else
                 {
-                    // Join the thread and remove the truck from the list
                     (*it)->join();
                     delete *it;
                     it = active_trucks.erase(it);
@@ -696,10 +668,11 @@ void *thread_render(void *arg)
             }
         }
 
-        mvprintw(HEIGHT, 0, "Remaining missiles: %d  Depot missiles: %d  Dinosaurs: %lu", heli.remaining_missiles.load(), depot.missiles, dinosaurs.size());
+        mvprintw(HEIGHT, 0, "Remaining missiles: %d  Depot missiles: %d  Dinosaurs: %lu",
+                 heli.remaining_missiles.load(), depot.missiles, dinosaurs.size());
 
         refresh();
-        usleep(25000); // Sleep for 25 milliseconds
+        usleep(25000);
     }
 
     clear();
@@ -709,7 +682,7 @@ void *thread_render(void *arg)
     nodelay(stdscr, FALSE);
     getch();
 
-    // Clean up any remaining trucks
+    // Clean up remaining trucks
     {
         std::lock_guard<std::mutex> lock(mtx_trucks);
         for (auto truck : active_trucks)
@@ -754,13 +727,9 @@ void *thread_dinosaur_manager(void *arg)
                 break;
             }
 
-            // Fixed y-position for all dinosaurs (ground level)
+            // Spawn a new dinosaur
             double spawn_y = HEIGHT - 2;
-
-            // Randomize initial direction for diversity
             int initial_direction = (rand() % 2 == 0) ? -1 : 1;
-
-            // Spawn a new dinosaur at the ground level
             double spawn_x = (initial_direction == -1) ? WIDTH - 2 : 1;
             Dinosaur *d = new Dinosaur(spawn_x, spawn_y, m, initial_direction);
             dinosaurs.push_back(d);
@@ -769,7 +738,7 @@ void *thread_dinosaur_manager(void *arg)
             last_spawn_time = current_time;
         }
 
-        usleep(500000); // Sleep for 500 milliseconds
+        usleep(500000);
     }
     return nullptr;
 }
@@ -782,14 +751,14 @@ void Missile::check_collision(double prev_x, double curr_x)
     {
         if (d->active)
         {
-            double d_head_x = d->x + d->direction; // Dinosaur head x position
-            double d_head_y = d->y - 1;            // Dinosaur head y position
+            double d_head_x = d->x + d->direction;
+            double d_head_y = d->y - 1;
 
-            // Check for collision between previous and current positions
             int missile_y = static_cast<int>(y);
             if (missile_y == static_cast<int>(d_head_y))
             {
-                if ((prev_x <= d_head_x && curr_x >= d_head_x) || (prev_x >= d_head_x && curr_x <= d_head_x))
+                if ((prev_x <= d_head_x && curr_x >= d_head_x) ||
+                    (prev_x >= d_head_x && curr_x <= d_head_x))
                 {
                     d->take_damage();
                     active = false;
@@ -797,10 +766,11 @@ void Missile::check_collision(double prev_x, double curr_x)
                 }
             }
 
-            // Check collision with dinosaur's body (ineffective)
+            // Collision with dinosaur's body (ineffective)
             if (missile_y == static_cast<int>(d->y))
             {
-                if ((prev_x <= d->x && curr_x >= d->x) || (prev_x >= d->x && curr_x <= d->x))
+                if ((prev_x <= d->x && curr_x >= d->x) ||
+                    (prev_x >= d->x && curr_x <= d->x))
                 {
                     active = false;
                     break;
@@ -818,16 +788,17 @@ void Dinosaur::check_collision()
 
     std::lock_guard<std::mutex> lock(mtx);
 
-    // Check collision with dinosaur's body
-    bool collision_body = (static_cast<int>(x) == static_cast<int>(heli_x) && static_cast<int>(y) == static_cast<int>(heli_y));
+    // Collision with dinosaur's body
+    bool collision_body = (static_cast<int>(x) == static_cast<int>(heli_x) &&
+                           static_cast<int>(y) == static_cast<int>(heli_y));
 
-    // Check collision with dinosaur's head
-    int head_x = static_cast<int>(x + direction); // Dinosaur head x position
-    bool collision_head = (head_x == static_cast<int>(heli_x) && static_cast<int>(y - 1) == static_cast<int>(heli_y));
+    // Collision with dinosaur's head
+    int head_x = static_cast<int>(x + direction);
+    bool collision_head = (head_x == static_cast<int>(heli_x) &&
+                           static_cast<int>(y - 1) == static_cast<int>(heli_y));
 
     if (collision_body || collision_head)
     {
-        // Collision detected
         running = false;
     }
 }
@@ -843,10 +814,10 @@ int main()
     noecho();
     curs_set(FALSE);
 
-    // Assign the helicopter pointer here
+    // Assign the helicopter pointer
     heli_ptr = &heli;
 
-    heli.set_y(HEIGHT - 3); // Position the helicopter just above the ground
+    heli.set_y(HEIGHT - 3);
 
     // Create threads
     pthread_t input_thread_id, render_thread_id, dinosaur_manager_thread_id, truck_thread_id;
