@@ -16,7 +16,7 @@ const int HEIGHT = 20;
 // Difficulty parameters
 int m = 3;  // Number of hits required to kill a dinosaur
 int n = 5;  // Helicopter missile capacity
-int t = 55; // Time interval between dinosaur spawns (in seconds)
+int t = 20; // Time interval between dinosaur spawns (in seconds)
 
 class Truck;
 
@@ -726,6 +726,17 @@ void *thread_render(void *arg)
 // Function to manage dinosaurs
 void *thread_dinosaur_manager(void *arg)
 {
+    // Spawn the initial dinosaur
+    {
+        std::lock_guard<std::mutex> lock(mtx_dinosaurs);
+        double spawn_y = HEIGHT - 2;
+        int initial_direction = (rand() % 2 == 0) ? -1 : 1;
+        double spawn_x = (initial_direction == -1) ? WIDTH - 2 : 1;
+        Dinosaur *d = new Dinosaur(spawn_x, spawn_y, m, initial_direction);
+        dinosaurs.push_back(d);
+        d->start();
+    }
+
     time_t last_spawn_time = time(nullptr);
     while (running)
     {
@@ -756,25 +767,6 @@ void *thread_dinosaur_manager(void *arg)
             d->start();
 
             last_spawn_time = current_time;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(mtx_dinosaurs);
-            // Ensure at least one dinosaur is present
-            if (dinosaurs.empty())
-            {
-                // Fixed y-position for all dinosaurs (ground level)
-                double spawn_y = HEIGHT - 2;
-
-                // Randomize initial direction for diversity
-                int initial_direction = (rand() % 2 == 0) ? -1 : 1;
-
-                // Spawn a new dinosaur at the ground level
-                double spawn_x = (initial_direction == -1) ? WIDTH - 2 : 1;
-                Dinosaur *d = new Dinosaur(spawn_x, spawn_y, m, initial_direction);
-                dinosaurs.push_back(d);
-                d->start();
-            }
         }
 
         usleep(500000); // Sleep for 500 milliseconds
