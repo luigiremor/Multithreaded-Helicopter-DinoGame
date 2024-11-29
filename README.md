@@ -24,6 +24,10 @@ To compile and run the game, use the following command:
 ```bash
 clang++ -std=c++11 -o game game.cpp -lncurses -lpthread
 ```
+or
+```bash
+g++ -std=c++11 -o game game.cpp -pthread -lncurses
+```
 
 After compiling, you can run the game with:
 
