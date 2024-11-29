@@ -33,7 +33,20 @@ std::vector<Truck *> active_trucks;
 std::mutex mtx_missiles;
 std::mutex mtx_dinosaurs;
 std::mutex mtx_trucks;
-std::atomic<bool> running(true);
+bool running = true;
+std::mutex mtx_running;
+
+void set_running(bool value)
+{
+    std::lock_guard<std::mutex> lock(mtx_running);
+    running = value;
+}
+
+bool is_running()
+{
+    std::lock_guard<std::mutex> lock(mtx_running);
+    return running;
+}
 
 // Depot position
 const int DEPOT_X = WIDTH / 2;
@@ -465,7 +478,7 @@ const int TRUCK_INTERVAL = 1000000; // 1 second in microseconds
 // Function to manage the truck
 void *thread_truck(void *arg)
 {
-    while (running)
+    while (is_running())
     {
         usleep(TRUCK_INTERVAL);
 
@@ -485,7 +498,7 @@ void *thread_truck(void *arg)
             active_trucks.push_back(truck);
         }
 
-        while (running && truck->active)
+        while (is_running() && truck->active)
         {
             usleep(500000);
         }
@@ -506,7 +519,7 @@ void *thread_input(void *arg)
     int ch;
     nodelay(stdscr, TRUE);
     keypad(stdscr, TRUE);
-    while (running)
+    while (is_running())
     {
         ch = getch();
         switch (ch)
@@ -560,7 +573,7 @@ void *thread_input(void *arg)
             }
             break;
         case 'q':
-            running = false;
+            set_running(false);
             break;
         default:
             break;
@@ -580,7 +593,7 @@ void *thread_input(void *arg)
 // Function to render the scenario
 void *thread_render(void *arg)
 {
-    while (running)
+    while (is_running())
     {
         clear();
         // Draw borders
@@ -711,7 +724,7 @@ void *thread_dinosaur_manager(void *arg)
     }
 
     time_t last_spawn_time = time(nullptr);
-    while (running)
+    while (is_running())
     {
         time_t current_time = time(nullptr);
 
@@ -721,9 +734,9 @@ void *thread_dinosaur_manager(void *arg)
             std::lock_guard<std::mutex> lock(mtx_dinosaurs);
 
             // Check if the maximum number of dinosaurs has been reached
-            if (dinosaurs.size() >= 5)
+            if (dinosaurs.size() == 4)
             {
-                running = false;
+                set_running(false);
                 break;
             }
 
@@ -799,7 +812,7 @@ void Dinosaur::check_collision()
 
     if (collision_body || collision_head)
     {
-        running = false;
+        set_running(false);
     }
 }
 
